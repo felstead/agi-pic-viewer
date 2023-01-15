@@ -11,8 +11,6 @@ eframe = "0.20.1"
 egui = "0.20.1"
 imgui = "0.9.0"
 thiserror = "1.0.38"
-tracing-subscriber = "0.3.16"
-
 
 # MiniFb version, very slow
 #minifb = "0.23.0"

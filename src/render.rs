@@ -5,9 +5,6 @@ use std::time::{Instant};
 use crate::agi_types::*;
 
 pub fn render_window(pic : PicResource) {
-    // Log to stdout (if you run with `RUST_LOG=debug`).
-    tracing_subscriber::fmt::init();
-
     let width = 1500.;
     let height = 900.;
 

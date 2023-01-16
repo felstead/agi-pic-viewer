@@ -1,118 +1,23 @@
+
 use std::collections::VecDeque;
+use egui::ecolor::*;
 
-use thiserror::Error;
-use byteorder::*;
-
-pub const VIEWPORT_WIDTH : usize = 160;
-pub const VIEWPORT_HEIGHT : usize = 168;
-pub const VIEWPORT_PIXELS : usize = VIEWPORT_WIDTH * VIEWPORT_HEIGHT;
-
-#[derive(Error, Debug)]
-pub enum AgiError {
-    #[error("IO error")]
-    IoError(#[from] std::io::Error),
-    #[error("Parse error")]
-    ParseError(String)
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct Resource {
-    resource_type : AgiResourceType,
-    resource_index : usize,
-    vol_file: u8,
-    vol_file_offset: usize,
-    raw_data: Vec<u8>
-}
-
-impl Resource {
-    pub fn get_raw_data(&self) -> &Vec<u8> {
-        &self.raw_data
-    }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum AgiResourceType {
-    Logic,
-    Picture,
-    View,
-    Sound,
-    Other
-}
+use crate::*;
 
 pub enum PictureBufferType {
     Picture,
     Priority
 }
 
-/*
-From: http://www.agidev.com/articles/agispec/agispecs-5.html
-
-Each directory file is of the same format. They contain a finite number of three byte entries, no more than 256. The size will vary depending on the number of files of the type that the directory file is pointing to. Dividing the filesize by three gives the maximum file number of that type of data file. Each entry is of the following format:
-
-    Byte 1           Byte 2           Byte 3
-7 6 5 4 3 2 1 0  7 6 5 4 3 2 1 0  7 6 5 4 3 2 1 0
-V V V V P P P P  P P P P P P P P  P P P P P P P P
-where V = VOL number and P = position (offset into VOL file).
-
-The entry number itself gives the number of the data file that it is pointing to. For example, if the following three byte entry is entry number 45 in the SOUND directory file,
-
-12 3D FE
-then sound.45 is located at position 0x23DFE in the vol.1 file. The first entry number is entry 0.
-
-If the three bytes contain the value 0xFFFFFF, then the resource does not exist.
-*/
-impl Resource {
-    pub fn new(resource_type : AgiResourceType, directory_file_stream : &Vec<u8>, resource_index : usize, volume_files : &Vec<Vec<u8>> ) -> Result<Option<Self>, AgiError> {
-        let stream_offset = resource_index * 3;
-
-        if resource_index >= directory_file_stream.len() {
-            Err(AgiError::ParseError(format!("Stream was too short, asked for index {}, but only have {}", resource_index, directory_file_stream.len())))
-        } else {
-            let vol_file : u8 = directory_file_stream[stream_offset] >> 4;
-            let vol_file_offset : usize = 
-                (((directory_file_stream[stream_offset] as usize) & 0xFusize) << 16) |
-                ((directory_file_stream[stream_offset+1] as usize) << 8) |
-                (directory_file_stream[stream_offset+2] as usize);
-
-            // Read the data from the volume file
-            if vol_file == 0xF {
-                Ok(None)
-            } else if vol_file as usize >= volume_files.len()  && vol_file != 0xF {
-               Err(AgiError::ParseError(format!("Attempted to access invalid volume file index {}", vol_file)))
-            } else {
-                // Read the data from the volume file
-                let my_vol_file_data = &volume_files[vol_file as usize];
-
-                let signature : u16 = LittleEndian::read_u16(&my_vol_file_data[vol_file_offset..=vol_file_offset+1]);
-                let resource_len : usize = LittleEndian::read_u16(&my_vol_file_data[vol_file_offset+3..=vol_file_offset+4]) as usize;
-
-                if signature != 0x3412 {
-                    return Err(AgiError::ParseError(format!("Expected signature 0x3412, got {:#04x}", signature)))
-                }
-
-                Ok(Some(Self { resource_type, resource_index, vol_file, vol_file_offset, raw_data: my_vol_file_data[vol_file_offset + 5..vol_file_offset + 5 + resource_len].to_vec() }))
-            }
-        }
-    }
-}
 
 
 pub struct PicResource {
     pic_buffer : Vec<FrameBufferPixel>,
     pri_buffer : Vec<FrameBufferPixel>,
-    instructions : Vec<PicRenderInstruction>
-}
-
-impl Default for PicResource {
-    fn default() -> Self {
-        PicResource { 
-            pic_buffer:  vec![FrameBufferPixel::default_picture_buffer(); VIEWPORT_PIXELS],
-            pri_buffer: vec![FrameBufferPixel::default_priority_buffer(); VIEWPORT_PIXELS],
-            instructions: vec![]
-        }
-    }
+    instructions : Vec<PicRenderInstruction>,
+    pic_raster_data : Vec<Color32>,
+    pri_raster_data : Vec<Color32>,
+    rasterize_on_render : bool
 }
 
 impl PicResource {
@@ -120,7 +25,14 @@ impl PicResource {
         // Read the instructions
         let mut offset = 0usize;
 
-        let mut resource = PicResource::default();
+        let mut resource = PicResource { 
+            pic_buffer:  vec![],
+            pri_buffer: vec![],
+            instructions: vec![],
+            rasterize_on_render: true,
+            pic_raster_data: vec![],
+            pri_raster_data: vec![]
+        };
 
         while offset < raw_data.len() {
             let (instruction, next_offset) = PicRenderInstruction::create_from_vec(raw_data, offset);
@@ -128,10 +40,34 @@ impl PicResource {
             offset = next_offset;
         }
 
-        resource.render(resource.instructions.len() - 1);
+        resource.render(resource.instructions.len() - 1, true);
 
         Ok(resource)
     }
+
+    pub fn get_color(agi_color : u8) -> Color32 {
+        // From here: https://moddingwiki.shikadi.net/wiki/EGA_Palette
+        match agi_color {
+            0x00 => Color32::from_rgb(0x00,0x00,0x00), // black
+            0x01 => Color32::from_rgb(0x00,0x00,0xAA), // blue
+            0x02 => Color32::from_rgb(0x00,0xAA,0x00), // green
+            0x03 => Color32::from_rgb(0x00,0xAA,0xAA), // cyan
+            0x04 => Color32::from_rgb(0xAA,0x00,0x00), // red
+            0x05 => Color32::from_rgb(0xAA,0x00,0xAA), // magenta
+            0x06 => Color32::from_rgb(0xAA,0x55,0x00), // brown
+            0x07 => Color32::from_rgb(0xAA,0xAA,0xAA), // light gray
+            0x08 => Color32::from_rgb(0x55,0x55,0x55), // dark gray
+            0x09 => Color32::from_rgb(0x55,0x55,0xFF), // light blue
+            0x0A => Color32::from_rgb(0x55,0xFF,0x55), // light green
+            0x0B => Color32::from_rgb(0x55,0xFF,0xFF), // light cyan
+            0x0C => Color32::from_rgb(0xFF,0x55,0x55), // light red
+            0x0D => Color32::from_rgb(0xFF,0x55,0xFF), // light magenta
+            0x0E => Color32::from_rgb(0xFF,0xFF,0x55), // yellow
+            0x0F => Color32::from_rgb(0xFF,0xFF,0xFF), // white
+            _ => Color32::from_rgb(0xFF,0x00,0xFF),
+        }
+    }
+
 
     pub fn get_instructions(&self) -> &Vec<PicRenderInstruction> {
         &self.instructions
@@ -144,7 +80,14 @@ impl PicResource {
         }
     }
 
-    pub fn render(&mut self, max_index: usize) {
+    pub fn get_raster_data(&self, buffer_type : &PictureBufferType) -> &Vec<Color32> {
+        match buffer_type {
+            PictureBufferType::Picture => &self.pic_raster_data,
+            PictureBufferType::Priority => &self.pri_raster_data
+        }
+    }
+
+    pub fn render(&mut self, max_index: usize, rasterize : bool) {
 
         let mut pic_color : Option<u8> = None;
         let mut pri_color : Option<u8> = None;
@@ -152,6 +95,12 @@ impl PicResource {
         // Clear buffers
         self.pic_buffer = vec![FrameBufferPixel::default_picture_buffer(); VIEWPORT_PIXELS];
         self.pri_buffer = vec![FrameBufferPixel::default_priority_buffer(); VIEWPORT_PIXELS];
+
+        self.rasterize_on_render = rasterize;
+        if self.rasterize_on_render {
+            self.pic_raster_data = vec![Self::get_color(0x0F); VIEWPORT_PIXELS];
+            self.pri_raster_data = vec![Self::get_color(0x04); VIEWPORT_PIXELS];
+        }
 
         for instruction_index in 0..=max_index {
             let inst = self.instructions[instruction_index].clone(); // Copy
@@ -166,10 +115,10 @@ impl PicResource {
                 PicRenderInstruction::AbsLine(args) => self.draw_abs_line(&args, pic_color, pri_color, instruction_index),
                 PicRenderInstruction::RelLine(args) => self.draw_rel_line(&args, pic_color, pri_color, instruction_index),
                 PicRenderInstruction::Fill(args) => self.fill(&args, pic_color, pri_color, instruction_index),
-                PicRenderInstruction::SetPenSizeAndStyle(args) => (),
-                PicRenderInstruction::PlotWithPen(args) => (),
+                PicRenderInstruction::SetPenSizeAndStyle(_args) => (),
+                PicRenderInstruction::PlotWithPen(_args) => (),
                 PicRenderInstruction::EndInstruction => (),
-                PicRenderInstruction::Unknown(code) => ()
+                PicRenderInstruction::Unknown(_code) => ()
             }
         }
     }
@@ -181,7 +130,7 @@ impl PicResource {
 
         if args.len() == 2 {
             // Just draw a single pixel
-            self.set_pixel(x1, y1, pic_color, pri_color, instruction_index);
+            self.set_both_buffer_pixel(x1, y1, pic_color, pri_color, instruction_index);
         } else {
             for i in (2..args.len()).step_by(2) {
                 let (x2, y2) = (args[i] as usize, args[i+1] as usize);
@@ -196,7 +145,7 @@ impl PicResource {
                     add_x = width.signum() as f32;
                     
                     while (x - x2 as f32).abs() > f32::EPSILON {
-                        self.set_pixel(
+                        self.set_both_buffer_pixel(
                             Self::sierra_round(x, add_x),
                             Self::sierra_round(y, add_y),
                             pic_color,
@@ -206,12 +155,12 @@ impl PicResource {
                         x += add_x;
                         y += add_y;
                     }
-                    self.set_pixel(x2, y2, pic_color, pri_color, instruction_index);
+                    self.set_both_buffer_pixel(x2, y2, pic_color, pri_color, instruction_index);
                 } else {
                     add_y = height.signum() as f32;
     
                     while (y - y2 as f32).abs() > f32::EPSILON {
-                        self.set_pixel(
+                        self.set_both_buffer_pixel(
                             Self::sierra_round(x, add_x),
                             Self::sierra_round(y, add_y),
                             pic_color,
@@ -221,7 +170,7 @@ impl PicResource {
                         x += add_x;
                         y += add_y;
                     }
-                    self.set_pixel(x2, y2, pic_color, pri_color, instruction_index);
+                    self.set_both_buffer_pixel(x2, y2, pic_color, pri_color, instruction_index);
                 }
     
                 (x1, y1) = (x2, y2)
@@ -238,11 +187,7 @@ impl PicResource {
             let sign_x = if 0x80 & arg > 0 { -1i8 } else { 1i8 };
             let sign_y = if 0x08 & arg > 0 { -1i8 } else { 1i8 };
 
-            let disp_x1 = (arg & 0x70) >> 4;
-            let disp_x1i = disp_x1 as i8;
-            let disp_y1 = arg & 0x07;
-
-            let disp_x = sign_x * disp_x1i;
+            let disp_x = sign_x * ((arg & 0x70) >> 4) as i8;
             let disp_y = sign_y * (arg & 0x07) as i8;
 
             let (x1, y1) = ((x as i16 + disp_x as i16) as u8, (y as i16 + disp_y as i16) as u8);
@@ -281,8 +226,15 @@ impl PicResource {
 
     fn fill(&mut self, args : &Vec<u8>, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
         for i in (0..args.len()).step_by(2) {
-            
+
             if let Some(color) = pic_color {
+                self.fill_specific_buffer(args[i] as usize, args[i+1] as usize, color, &PictureBufferType::Picture, instruction_index);
+            }
+
+            if let Some(color) = pri_color {
+                self.fill_specific_buffer(args[i] as usize, args[i+1] as usize, color, &PictureBufferType::Priority, instruction_index);
+            }
+/*
                 // Do our fill
                 let mut fill_queue = VecDeque::from([(args[i] as usize, args[i+1] as usize)]);
 
@@ -293,8 +245,7 @@ impl PicResource {
 
                     if self.pic_buffer[curr_buffer_index].color == 0x0F {
                         // Fill this and add our surroundings
-                        self.pic_buffer[curr_buffer_index].color = color;
-                        self.pic_buffer[curr_buffer_index].instruction_indexes.push(instruction_index);
+                        self.set_pixel(cur_x, cur_y, Some(color), None, instruction_index);
 
                         if cur_x < VIEWPORT_WIDTH - 1 { 
                             fill_queue.push_back((cur_x+1, cur_y));
@@ -311,6 +262,45 @@ impl PicResource {
                             fill_queue.push_back((cur_x, cur_y-1));
                         }
                     }
+                }
+            }*/
+        }
+    }
+
+    fn fill_specific_buffer(&mut self, x : usize, y : usize, color : u8, buffer_type : &PictureBufferType, instruction_index : usize) {
+
+        let default_color = match &buffer_type {
+            PictureBufferType::Picture => 0x0Fu8,
+            PictureBufferType::Priority => 0x04u8
+        };
+
+        if color == default_color {
+            // Filling with the default color is verboten
+            return;
+        }
+
+        // Do our fill
+        let mut fill_queue = VecDeque::from([(x, y)]);
+
+        while !fill_queue.is_empty() {
+            let (cur_x, cur_y) = fill_queue.pop_front().unwrap();
+            if self.get_single_buffer_pixel_color(cur_x, cur_y, &buffer_type) == default_color {
+                // Fill this and add our surroundings
+                self.set_single_buffer_pixel(cur_x, cur_y, color, &buffer_type, instruction_index);
+
+                if cur_x < VIEWPORT_WIDTH - 1 { 
+                    fill_queue.push_back((cur_x+1, cur_y));
+                }
+                if cur_x > 0 { 
+                    fill_queue.push_back((cur_x-1, cur_y));
+                }
+
+                if cur_y < VIEWPORT_HEIGHT - 1 {
+                    fill_queue.push_back((cur_x, cur_y+1));
+                }
+
+                if cur_y > 0 {
+                    fill_queue.push_back((cur_x, cur_y-1));
                 }
             }
         }
@@ -333,17 +323,37 @@ impl PicResource {
 
     }
 
-    fn set_pixel(&mut self, x : usize, y : usize, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
-        let buffer_index = y * 160 + x;
-
+    fn set_both_buffer_pixel(&mut self, x : usize, y : usize, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
         if let Some(color) = pic_color {
-            self.pic_buffer[buffer_index].color = color;
-            self.pic_buffer[buffer_index].instruction_indexes.push(instruction_index);
+            self.set_single_buffer_pixel(x, y, color, &PictureBufferType::Picture, instruction_index);
         }
 
         if let Some(color) = pri_color {
-            self.pri_buffer[buffer_index].color = color;
-            self.pri_buffer[buffer_index].instruction_indexes.push(instruction_index);
+            self.set_single_buffer_pixel(x, y, color, &PictureBufferType::Priority, instruction_index);
+        }
+    }
+
+    fn get_single_buffer_pixel_color(&self, x : usize, y : usize, buffer_type : &PictureBufferType) -> u8 {
+        let buffer_index = y * VIEWPORT_WIDTH + x;
+
+        match buffer_type {
+            PictureBufferType::Picture => self.pic_buffer[buffer_index].color,
+            PictureBufferType::Priority => self.pri_buffer[buffer_index].color
+        }
+    }
+
+    fn set_single_buffer_pixel(&mut self, x : usize, y : usize, color : u8, buffer_type : &PictureBufferType, instruction_index : usize) {
+        let (buffer, raster_buffer) = match &buffer_type {
+            PictureBufferType::Picture => (&mut self.pic_buffer, &mut self.pic_raster_data),
+            PictureBufferType::Priority => (&mut self.pri_buffer, &mut self.pri_raster_data)
+        };
+
+        let buffer_index = y * VIEWPORT_WIDTH + x;
+        buffer[buffer_index].color = color;
+        buffer[buffer_index].instruction_indexes.push(instruction_index);
+
+        if self.rasterize_on_render {
+            raster_buffer[buffer_index] = Self::get_color(color);
         }
     }
 }

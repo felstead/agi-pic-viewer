@@ -1,4 +1,4 @@
-use std::{{fs::File}, io::{Read}, path::{Path}, time::{Instant}};
+use std::{{fs::File}, io::{Read}, path::{Path}, time::{Instant}, env};
 use eframe::egui;
 use egui::*;
 use egui::style::*;
@@ -225,14 +225,15 @@ impl eframe::App for AgiViewerApp {
 
 fn main() -> Result<(), AgiError> {
 
-    
-    //let resources = read_resources("PICDIR", &vol_file_data).unwrap();
+    let args : Vec<_> = env::args().collect();
 
-    //let pic_resource = PicResource::new(resources[0].get_raw_data())?;
+    if args.len() < 2 {
+        println!("Please provide a path to an existing AGI game on your machine, e.g.:");
+        println!("   agi-pic-viewer \"C:\\Program Files (x86)\\GOG Galaxy\\Games\\Kings Quest 2\\\"");
+        return Ok(());
+    }
 
-    //for resource in resources {}
-
-    let game = Game::new_from_dir(Path::new("C:\\Program Files (x86)\\GOG Galaxy\\Games\\Kings Quest 2\\"))?;
+    let game = Game::new_from_dir(Path::new(&args[1]))?;
 
     let width = 1500.;
     let height = 900.;

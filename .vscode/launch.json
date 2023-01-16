@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'agi-pic-render'",
+            "name": "Debug executable 'agi-pic-viewer'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=agi-pic-render",
-                    "--package=agi-pic-render"
+                    "--bin=agi-pic-viewer",
+                    "--package=agi-pic-viewer"
                 ],
                 "filter": {
-                    "name": "agi-pic-render",
+                    "name": "agi-pic-viewer",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'agi-pic-render'",
+            "name": "Debug unit tests in executable 'agi-pic-viewer'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=agi-pic-render",
-                    "--package=agi-pic-render"
+                    "--bin=agi-pic-viewer",
+                    "--package=agi-pic-viewer"
                 ],
                 "filter": {
-                    "name": "agi-pic-render",
+                    "name": "agi-pic-viewer",
                     "kind": "bin"
                 }
             },

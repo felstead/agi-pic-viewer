@@ -126,6 +126,11 @@ impl PicResource {
     // This function and the next are ported from here: http://www.agidev.com/articles/agispec/agispecs-7.html#ss7.1
     // Basically the arguments are pairs of coordinates to draw lines between
     fn draw_abs_line(&mut self, args : &Vec<u8>, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
+        if args.is_empty() || args.len() % 2 != 0 {
+            // TODO: Log error
+            return;
+        }
+
         let (mut x1, mut y1) = (args[0] as usize, args[1] as usize);
 
         if args.len() == 2 {
@@ -179,11 +184,16 @@ impl PicResource {
     }
 
     fn draw_rel_line(&mut self, args : &Vec<u8>, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
+
+        if args.len() < 2 {
+            // TODO: Log error
+            return;
+        }
+
         // Convert the relative arguments to absolute
         let mut abs_lines = vec![args[0], args[1]];
         let (mut x, mut y) = (args[0], args[1]);
-        for i in 2..args.len() {
-            let arg = args[i];
+        for arg in args.iter().skip(2) {
             let sign_x = if 0x80 & arg > 0 { -1i8 } else { 1i8 };
             let sign_y = if 0x08 & arg > 0 { -1i8 } else { 1i8 };
 
@@ -202,17 +212,20 @@ impl PicResource {
 
     fn draw_corner_line(&mut self, args : &Vec<u8>, start_on_x : bool, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
         
+        if args.len() < 2 {
+            // TODO: Log error
+            return;
+        }
+
         let mut abs_lines = vec![args[0], args[1]];
         let (mut x, mut y) = (args[0], args[1]);
         let mut direction_is_x = start_on_x;
 
-        for i in 2..args.len() {
-            let arg = args[i];
-
+        for arg in args.iter().skip(2) {
             if direction_is_x {
-                x = arg;
+                x = *arg;
             } else {
-                y = arg;
+                y = *arg;
             }
 
             abs_lines.push(x);
@@ -225,6 +238,11 @@ impl PicResource {
     }
 
     fn fill(&mut self, args : &Vec<u8>, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {
+        if args.len() % 2 != 0 {
+            // TODO: Log error
+            return;
+        }
+
         for i in (0..args.len()).step_by(2) {
 
             if let Some(color) = pic_color {
@@ -284,9 +302,9 @@ impl PicResource {
 
         while !fill_queue.is_empty() {
             let (cur_x, cur_y) = fill_queue.pop_front().unwrap();
-            if self.get_single_buffer_pixel_color(cur_x, cur_y, &buffer_type) == default_color {
+            if self.get_single_buffer_pixel_color(cur_x, cur_y, buffer_type) == default_color {
                 // Fill this and add our surroundings
-                self.set_single_buffer_pixel(cur_x, cur_y, color, &buffer_type, instruction_index);
+                self.set_single_buffer_pixel(cur_x, cur_y, color, buffer_type, instruction_index);
 
                 if cur_x < VIEWPORT_WIDTH - 1 { 
                     fill_queue.push_back((cur_x+1, cur_y));
@@ -313,14 +331,11 @@ impl PicResource {
             } else { 
                 num.ceil() as usize 
             }
+        } else if num - num.floor() < 0.499 {
+            num.floor() as usize
         } else {
-            if num - num.floor() < 0.499 {
-                num.floor() as usize
-            } else {
-                num.ceil() as usize
-            }
+            num.ceil() as usize
         }
-
     }
 
     fn set_both_buffer_pixel(&mut self, x : usize, y : usize, pic_color : Option<u8>, pri_color : Option<u8>, instruction_index : usize) {

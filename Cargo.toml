@@ -1,5 +1,5 @@
 [package]
-name = "agi-pic-render"
+name = "agi-pic-viewer"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,8 +11,3 @@ eframe = "0.20.1"
 egui = "0.20.1"
 imgui = "0.9.0"
 thiserror = "1.0.38"
-
-# MiniFb version, very slow
-#minifb = "0.23.0"
-#raqote = { version = "0.8.1", features = [ "text" ] }
-#font-kit = "0.10"

@@ -1,4 +1,5 @@
-use std::{{fs::File}, io::{Read}, path::{Path}, time::{Instant}, env};
+use std::{{fs::File}, io::{Read}, path::{Path}, env};
+use agi_types::pic_render::{PixelBuffer, render_pixels, get_color};
 use eframe::egui;
 use egui::*;
 use egui::style::*;
@@ -7,7 +8,6 @@ use crate::agi_types::{common::*, resource::*, pic::*, game::*};
 mod agi_types;
 
 struct AgiViewerApp {
-    fps : f32,
     _pointer_loc : Pos2,
     pic_shapes_list : Vec<Shape>,
     pic_rect : Rect,
@@ -24,7 +24,6 @@ impl AgiViewerApp {
     fn new(game : Game) -> Self {
         let selected_instruction = if game.pic_resources.is_empty() { 0 } else { game.pic_resources[0].get_instructions().len() - 1 };
         AgiViewerApp {
-            fps: 0.,
             _pointer_loc : Pos2::default(),
             pic_shapes_list : vec![],
             pic_rect : Rect::EVERYTHING,
@@ -49,8 +48,6 @@ impl AgiViewerApp {
             PictureBufferType::Priority => (&mut self.pri_rect, &mut self.pri_shapes_list, Stroke { width: 1.0, color: Color32::from_rgb(0xaf,0xaf,0xaf) })
         };
 
-        let pic = &mut self.game.pic_resources[self.selected_pic].get_buffer(&buffer_type);
-
         // Redraw if the view rect has changed
         if *buffer_view != view {
             *buffer_view = view;
@@ -60,7 +57,19 @@ impl AgiViewerApp {
             shape_buffer.clear();
 
             // The actual image pixels
-            Self::draw_pixels(buffer_view, shape_buffer, pic, painter);
+            let pic = &self.game.pic_resources[self.selected_pic];
+
+            let mut pic_buffer = PixelBuffer::new(get_color(PIC_BUFFER_BASE_COLOR));
+            let mut pri_buffer = PixelBuffer::new(get_color(PRI_BUFFER_BASE_COLOR));
+
+            render_pixels(&pic.get_instructions()[0..=self.selected_instruction], &mut Some(&mut pic_buffer), &mut Some(&mut pri_buffer)).unwrap();
+
+            let displayed_buffer = match buffer_type {
+                PictureBufferType::Picture => &pic_buffer,
+                PictureBufferType::Priority => &pri_buffer,
+            };
+
+            Self::draw_pixels(buffer_view, shape_buffer, displayed_buffer.get_pixels(), painter);
 
             // Grid lines
             let draw_grid = false;
@@ -80,16 +89,16 @@ impl AgiViewerApp {
         }
     }
 
-    fn draw_pixels(view : &Rect, shape_buffer : &mut Vec<Shape>, pixels : &[FrameBufferPixel], painter : &Painter) {
+    fn draw_pixels(view : &Rect, shape_buffer : &mut Vec<Shape>, pixels : &[Color32], painter : &Painter) {
         let (x_step, y_step) = Self::get_xy_step(view);
 
         for (i, px) in pixels.iter().enumerate() {
             let x = ((i % VIEWPORT_WIDTH) as f32 * x_step) + view.min.x;
             let y = ((i / VIEWPORT_WIDTH) as f32 * y_step) + view.min.y;
 
-            let px_rect = Rect::from_min_size(painter.round_pos_to_pixels(pos2(x,y)), painter.round_vec_to_pixels(vec2(x_step, y_step)));
+            let px_rect = Rect::from_min_max(painter.round_pos_to_pixels(pos2(x,y)), painter.round_pos_to_pixels(pos2(x+x_step, y+y_step)));
 
-            shape_buffer.push(Shape::rect_filled(px_rect, Rounding::none(), PicResource::get_color(px.color)));
+            shape_buffer.push(Shape::rect_filled(px_rect, Rounding::none(), *px));
         }
     }
 
@@ -100,14 +109,15 @@ impl AgiViewerApp {
 
 impl eframe::App for AgiViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let now = Instant::now();
-
         if self.texture_handles.is_empty() {
             // Load the thumbnail textures
             self.game.pic_resources.iter().enumerate().for_each(|(i, r)| {
+                let mut pic_buffer = PixelBuffer::new(Color32::WHITE);
+                render_pixels(r.get_instructions(), &mut Some(&mut pic_buffer), &mut None).unwrap();
+
                 let image_data = ColorImage {
                     size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
-                    pixels: r.get_raster_data(&PictureBufferType::Picture).clone()
+                    pixels: pic_buffer.get_pixels_vec()
                 };
                 self.texture_handles.push(ctx.load_texture(format!("PIC {}", i), image_data, Default::default()));
             });
@@ -145,27 +155,17 @@ impl eframe::App for AgiViewerApp {
                 ui.horizontal_centered(|ui| {
                     // Add the instruction list
                     ui.vertical(|ui| {
-                        ui.set_max_width(200.);
+                        ui.set_max_width(300.);
                         ScrollArea::both().auto_shrink([false; 2]).show(ui, |ui| {
                             ui.label("Instruction list");
                             ui.separator();
 
                             for i in 0..(self.get_selected_pic().get_instructions().len()) {
-                                let inst = self.get_selected_pic().get_instructions()[i].clone();
+                                let inst_text = format!("{}. {}", i, self.get_selected_pic().get_instructions()[i]);
                                 ui.style_mut().wrap = Some(false);
-                                /*let label_response = ui.button(format!("{}. {:?}", i, inst));
-                                if label_response.clicked() {
-                                    self.game.pic_resources[self.selected_pic].render(i, false);
-
-                                    // Hack to invalidate and redraw everything
-                                    self.pic_rect = Rect::NOTHING;
-                                    self.pri_rect = Rect::NOTHING;
-                                }*/
-
-                                let button = ui.selectable_value(&mut self.selected_instruction, i, format!("{}. {:?}", i, inst));
+                                
+                                let button = ui.selectable_value(&mut self.selected_instruction, i, inst_text);
                                 if button.clicked() {
-                                    self.game.pic_resources[self.selected_pic].render(i, false);
-
                                     // Hack to invalidate and redraw everything
                                     self.pic_rect = Rect::NOTHING;
                                     self.pri_rect = Rect::NOTHING;
@@ -213,12 +213,7 @@ impl eframe::App for AgiViewerApp {
                     });
                 });
             });
-
-
         });
-
-        let frame_time = now.elapsed().as_secs_f32();
-        self.fps = 1. / frame_time;
     }
 }
 

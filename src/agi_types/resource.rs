@@ -47,7 +47,7 @@ impl Resource {
         let stream_offset = resource_index * 3;
 
         if resource_index >= directory_file_stream.len() {
-            Err(AgiError::ParseError(format!("Stream was too short, asked for index {}, but only have {}", resource_index, directory_file_stream.len())))
+            Err(AgiError::Parse(format!("Stream was too short, asked for index {}, but only have {}", resource_index, directory_file_stream.len())))
         } else {
             let vol_file : u8 = directory_file_stream[stream_offset] >> 4;
             let vol_file_offset : usize = 
@@ -59,7 +59,7 @@ impl Resource {
             if vol_file == 0xF {
                 Ok(None)
             } else if vol_file as usize >= volume_files.len()  && vol_file != 0xF {
-               Err(AgiError::ParseError(format!("Attempted to access invalid volume file index {}", vol_file)))
+               Err(AgiError::Parse(format!("Attempted to access invalid volume file index {}", vol_file)))
             } else {
                 // Read the data from the volume file
                 let my_vol_file_data = &volume_files[vol_file as usize];
@@ -68,7 +68,7 @@ impl Resource {
                 let resource_len : usize = LittleEndian::read_u16(&my_vol_file_data[vol_file_offset+3..=vol_file_offset+4]) as usize;
 
                 if signature != 0x3412 {
-                    return Err(AgiError::ParseError(format!("Expected signature 0x3412, got {:#04x}", signature)))
+                    return Err(AgiError::Parse(format!("Expected signature 0x3412, got {:#04x}", signature)))
                 }
 
                 Ok(Some(Self { resource_type, resource_index, vol_file, vol_file_offset, raw_data: my_vol_file_data[vol_file_offset + 5..vol_file_offset + 5 + resource_len].to_vec() }))

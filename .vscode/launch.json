@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["C:\\Program Files (x86)\\GOG Galaxy\\Games\\Kings Quest\\"],
+            "args": ["C:\\Program Files (x86)\\GOG Galaxy\\Games\\Kings Quest 2\\"],
             "cwd": "${workspaceFolder}"
         },
         {

@@ -155,7 +155,7 @@ impl eframe::App for AgiViewerApp {
                 ui.horizontal_centered(|ui| {
                     // Add the instruction list
                     ui.vertical(|ui| {
-                        ui.set_max_width(300.);
+                        ui.set_max_width(250.);
                         ScrollArea::both().auto_shrink([false; 2]).show(ui, |ui| {
                             ui.label("Instruction list");
                             ui.separator();

@@ -125,64 +125,66 @@ pub fn render_pixels(instructions : &[DerivedPicRenderInstruction], pic_buffer :
 
 fn draw_lines(lines : &Vec<PosU8>, pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
 
-    let (mut x1, mut y1) = (lines[0].x as usize, lines[0].y as usize);
+    if lines.len() > 0 {
+        let (mut x1, mut y1) = (lines[0].x as usize, lines[0].y as usize);
 
-    let mut set_buffers_pixels = |x : usize, y : usize, sub_index : usize| -> Result<(), AgiError> {
-
-        if let Some(pic_buffer) = pic_buffer {
-            pic_buffer.set_pixel(x, y, pic_color, InstructionIndex::new_sub(instruction_index, sub_index))?;
-        }
-
-        if let Some(pri_buffer) = pri_buffer {
-            pri_buffer.set_pixel(x, y, pri_color, InstructionIndex::new_sub(instruction_index, sub_index))?;
-        }
-
-        Ok(())
-    };
-
-    if lines.len() == 1 {
-        // Just draw a single pixel
-        set_buffers_pixels(x1, y1, 0)?;
-    } else {
-        for (line_index, line) in lines.iter().enumerate().skip(1) {
-            let (x2, y2) = (line.x as usize, line.y as usize);
-
-            let (height, width) = (y2 as i32 - y1 as i32, x2 as i32 - x1 as i32);
-
-            let mut add_x = if height == 0 { 0.0 } else { width as f32 / (height as f32).abs() };
-            let mut add_y = if width == 0 { 0.0 } else { height as f32 / (width as f32).abs() };
-
-            let (mut x, mut y) = (x1 as f32, y1 as f32);
-            if width.abs() > height.abs() {
-                add_x = width.signum() as f32;
-                
-                while (x - x2 as f32).abs() > f32::EPSILON {
-                    set_buffers_pixels(
-                        sierra_round(x, add_x),
-                        sierra_round(y, add_y),
-                        line_index)?;
-
-                    x += add_x;
-                    y += add_y;
-                }
-
-                set_buffers_pixels(x2, y2, line_index)?;
-            } else {
-                add_y = height.signum() as f32;
-
-                while (y - y2 as f32).abs() > f32::EPSILON {
-                    set_buffers_pixels(
-                        sierra_round(x, add_x),
-                        sierra_round(y, add_y),
-                        line_index)?;
-
-                    x += add_x;
-                    y += add_y;
-                }
-                set_buffers_pixels(x2, y2, line_index)?;
+        let mut set_buffers_pixels = |x : usize, y : usize, sub_index : usize| -> Result<(), AgiError> {
+    
+            if let Some(pic_buffer) = pic_buffer {
+                pic_buffer.set_pixel(x, y, pic_color, InstructionIndex::new_sub(instruction_index, sub_index))?;
             }
-
-            (x1, y1) = (x2, y2)
+    
+            if let Some(pri_buffer) = pri_buffer {
+                pri_buffer.set_pixel(x, y, pri_color, InstructionIndex::new_sub(instruction_index, sub_index))?;
+            }
+    
+            Ok(())
+        };
+    
+        if lines.len() == 1 {
+            // Just draw a single pixel
+            set_buffers_pixels(x1, y1, 0)?;
+        } else {
+            for (line_index, line) in lines.iter().enumerate().skip(1) {
+                let (x2, y2) = (line.x as usize, line.y as usize);
+    
+                let (height, width) = (y2 as i32 - y1 as i32, x2 as i32 - x1 as i32);
+    
+                let mut add_x = if height == 0 { 0.0 } else { width as f32 / (height as f32).abs() };
+                let mut add_y = if width == 0 { 0.0 } else { height as f32 / (width as f32).abs() };
+    
+                let (mut x, mut y) = (x1 as f32, y1 as f32);
+                if width.abs() > height.abs() {
+                    add_x = width.signum() as f32;
+                    
+                    while (x - x2 as f32).abs() > f32::EPSILON {
+                        set_buffers_pixels(
+                            sierra_round(x, add_x),
+                            sierra_round(y, add_y),
+                            line_index)?;
+    
+                        x += add_x;
+                        y += add_y;
+                    }
+    
+                    set_buffers_pixels(x2, y2, line_index)?;
+                } else {
+                    add_y = height.signum() as f32;
+    
+                    while (y - y2 as f32).abs() > f32::EPSILON {
+                        set_buffers_pixels(
+                            sierra_round(x, add_x),
+                            sierra_round(y, add_y),
+                            line_index)?;
+    
+                        x += add_x;
+                        y += add_y;
+                    }
+                    set_buffers_pixels(x2, y2, line_index)?;
+                }
+    
+                (x1, y1) = (x2, y2)
+            }
         }
     }
 

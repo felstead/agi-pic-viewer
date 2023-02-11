@@ -1,5 +1,5 @@
 use std::{{fs::File}, io::{Read}, path::{Path}, env};
-use agi_types::pic_render::{PixelBuffer, render_pixels, get_color};
+use agi_types::pic_render::*;
 use eframe::egui;
 use egui::*;
 use egui::style::*;
@@ -7,17 +7,24 @@ use egui::style::*;
 use crate::agi_types::{common::*, resource::*, pic::*, game::*};
 mod agi_types;
 
+#[derive(PartialEq)]
+enum CanvasView {
+    PicBufferPixels,
+    PriBufferPixels,
+    PicBufferVectors,
+}
+
 struct AgiViewerApp {
     _pointer_loc : Pos2,
-    pic_shapes_list : Vec<Shape>,
-    pic_rect : Rect,
-    pri_shapes_list : Vec<Shape>,
-    pri_rect : Rect,
     game : Game,
+    canvas_view_rect : Rect,
+    canvas_view_shapes : Vec<Shape>,
     selected_pic : usize,
     texture_handles : Vec<TextureHandle>,
-    show_pri_buffer : bool,
-    selected_instruction : usize
+    selected_canvas_view : CanvasView,
+    selected_instruction : usize,
+    line_width : f32,
+    new_line_width : f32
 }
 
 impl AgiViewerApp {
@@ -25,15 +32,15 @@ impl AgiViewerApp {
         let selected_instruction = if game.pic_resources.is_empty() { 0 } else { game.pic_resources[0].get_instructions().len() - 1 };
         AgiViewerApp {
             _pointer_loc : Pos2::default(),
-            pic_shapes_list : vec![],
-            pic_rect : Rect::EVERYTHING,
-            pri_shapes_list : vec![],
-            pri_rect : Rect::EVERYTHING,
             game,
+            canvas_view_rect : Rect::EVERYTHING,
+            canvas_view_shapes : vec![],
             selected_pic : 0,
             texture_handles : vec![],
-            show_pri_buffer : false,
-            selected_instruction
+            selected_canvas_view : CanvasView::PicBufferPixels,
+            selected_instruction,
+            line_width : 2.0,
+            new_line_width : 2.0
         }
     }
 
@@ -41,52 +48,37 @@ impl AgiViewerApp {
         &self.game.pic_resources[self.selected_pic]
     }
 
-    fn generate_view(&mut self, view : Rect, buffer_type : PictureBufferType, painter : &Painter) {
+    fn generate_view(pic : &PicResource, selected_instruction : usize, view : Rect, canvas_view_type : &CanvasView, line_width : f32, painter : &Painter) -> Vec<Shape> {
 
-        let (buffer_view, shape_buffer, grid_stroke) = match buffer_type {
-            PictureBufferType::Picture => (&mut self.pic_rect, &mut self.pic_shapes_list, Stroke { width: 1.0, color: Color32::from_rgb(0xdf,0xdf,0xdf) }),
-            PictureBufferType::Priority => (&mut self.pri_rect, &mut self.pri_shapes_list, Stroke { width: 1.0, color: Color32::from_rgb(0xaf,0xaf,0xaf) })
+        let mut shape_buffer : Vec<Shape> = vec![];
+
+        // The actual image pixels
+        let (mut pic_buffer, mut pri_buffer, mut pic_vectors) = match canvas_view_type {
+            CanvasView::PicBufferPixels => {
+                (Some(PixelBuffer::new(get_color(PIC_BUFFER_BASE_COLOR))), None, None)
+            },
+            CanvasView::PriBufferPixels => {
+                (None, Some(PixelBuffer::new(get_color(PIC_BUFFER_BASE_COLOR))), None)
+            },
+            CanvasView::PicBufferVectors => {
+                (Some(PixelBuffer::new(get_color(PIC_BUFFER_BASE_COLOR))), None, Some(ShapeBuffer::new()))
+            }
         };
 
-        // Redraw if the view rect has changed
-        if *buffer_view != view {
-            *buffer_view = view;
+        render_to_buffers(
+            &pic.get_instructions()[0..=selected_instruction],
+            &mut pic_buffer.as_mut(),
+            &mut pri_buffer.as_mut(),
+            &mut pic_vectors.as_mut()).unwrap();
 
-            let (x_step, y_step) = Self::get_xy_step(&view);
+        
+        match canvas_view_type {
+            CanvasView::PicBufferPixels => Self::draw_pixels(&view, &mut shape_buffer, pic_buffer.unwrap().get_pixels(), painter),
+            CanvasView::PriBufferPixels => Self::draw_pixels(&view, &mut shape_buffer, pri_buffer.unwrap().get_pixels(), painter),
+            CanvasView::PicBufferVectors => Self::draw_vectors(&view, line_width, &mut shape_buffer, &pic_vectors.unwrap(), painter)
+        };
 
-            shape_buffer.clear();
-
-            // The actual image pixels
-            let pic = &self.game.pic_resources[self.selected_pic];
-
-            let mut pic_buffer = PixelBuffer::new(get_color(PIC_BUFFER_BASE_COLOR));
-            let mut pri_buffer = PixelBuffer::new(get_color(PRI_BUFFER_BASE_COLOR));
-
-            render_pixels(&pic.get_instructions()[0..=self.selected_instruction], &mut Some(&mut pic_buffer), &mut Some(&mut pri_buffer)).unwrap();
-
-            let displayed_buffer = match buffer_type {
-                PictureBufferType::Picture => &pic_buffer,
-                PictureBufferType::Priority => &pri_buffer,
-            };
-
-            Self::draw_pixels(buffer_view, shape_buffer, displayed_buffer.get_pixels(), painter);
-
-            // Grid lines
-            let draw_grid = false;
-            if draw_grid {
-                for x in 0..VIEWPORT_WIDTH {
-                    let l1 = pos2(x as f32 * x_step + view.min.x, view.min.y);
-                    let l2 = pos2(x as f32 * x_step + view.min.x, view.max.y);
-                    shape_buffer.push(Shape::line_segment([l1, l2], grid_stroke));
-                }
-    
-                for y in 0..VIEWPORT_HEIGHT {
-                    let l1 = pos2(view.min.x, y as f32 * y_step + view.min.y);
-                    let l2 = pos2(view.max.x, y as f32 * y_step + view.min.y);
-                    shape_buffer.push(Shape::line_segment([l1, l2], grid_stroke));
-                }
-            }
-        }
+        shape_buffer
     }
 
     fn draw_pixels(view : &Rect, shape_buffer : &mut Vec<Shape>, pixels : &[Color32], painter : &Painter) {
@@ -102,6 +94,31 @@ impl AgiViewerApp {
         }
     }
 
+    fn draw_vectors(view : &Rect, line_width : f32, shape_buffer : &mut Vec<Shape>, vectors : &ShapeBuffer, _painter : &Painter) {
+        let (x_step, y_step) = Self::get_xy_step(view);
+
+        // Background
+        shape_buffer.push(Shape::rect_filled(*view, Rounding::none(), Color32::WHITE));
+
+        // Add lines here
+        for path in vectors.get_paths() {
+            if path.points.len() == 1 {
+                let p = path.points[0];
+                shape_buffer.push(Shape::circle_filled(pos2((p.x * x_step) + view.min.x, (p.y * y_step) + view.min.y), line_width / 2.0, path.color));
+            } else {
+                let translated_lines = path.points.iter()
+                .map(|p| {
+                    pos2((p.x * x_step) + view.min.x, (p.y * y_step) + view.min.y)
+                })
+                .collect::<Vec<Pos2>>();
+
+                let line = Shape::line(translated_lines, Stroke::new(line_width, path.color));
+
+                shape_buffer.push(line);
+            }
+        }
+    }
+
     fn get_xy_step(view : &Rect) -> (f32, f32) {
         (view.width() / VIEWPORT_WIDTH as f32, view.height() / VIEWPORT_HEIGHT as f32)
     }
@@ -113,7 +130,7 @@ impl eframe::App for AgiViewerApp {
             // Load the thumbnail textures
             self.game.pic_resources.iter().enumerate().for_each(|(i, r)| {
                 let mut pic_buffer = PixelBuffer::new(Color32::WHITE);
-                render_pixels(r.get_instructions(), &mut Some(&mut pic_buffer), &mut None).unwrap();
+                render_to_buffers(r.get_instructions(), &mut Some(&mut pic_buffer), &mut None, &mut None).unwrap();
 
                 let image_data = ColorImage {
                     size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
@@ -142,8 +159,7 @@ impl eframe::App for AgiViewerApp {
                                     self.selected_instruction = self.game.pic_resources[i].get_instructions().len() - 1;
                                     
                                     // Hack to invalidate and redraw everything
-                                    self.pic_rect = Rect::NOTHING;
-                                    self.pri_rect = Rect::NOTHING;
+                                    self.canvas_view_rect = Rect::NOTHING;
                                 }
                                 ui.set_max_width(VIEWPORT_WIDTH as f32 + 5.0);
                             });
@@ -166,9 +182,8 @@ impl eframe::App for AgiViewerApp {
                                 
                                 let button = ui.selectable_value(&mut self.selected_instruction, i, inst_text);
                                 if button.clicked() {
-                                    // Hack to invalidate and redraw everything
-                                    self.pic_rect = Rect::NOTHING;
-                                    self.pri_rect = Rect::NOTHING;
+                                    // Invalidates the view for redraw
+                                    self.canvas_view_rect = Rect::NOTHING;
                                 }
                             }
                         })
@@ -185,8 +200,26 @@ impl eframe::App for AgiViewerApp {
 
                         // Canvas selector tab
                         let button_container = ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.show_pri_buffer, false, "Show Picture Buffer");
-                            ui.selectable_value(&mut self.show_pri_buffer, true, "Show Priority Buffer");
+                            let (a, b, c) = (
+                                ui.selectable_value(&mut self.selected_canvas_view, CanvasView::PicBufferPixels, "Picture Buffer"),
+                                ui.selectable_value(&mut self.selected_canvas_view, CanvasView::PicBufferVectors, "Upscaled Picture Buffer"),
+                                ui.selectable_value(&mut self.selected_canvas_view, CanvasView::PriBufferPixels, "Priority Buffer"),
+                            );
+
+                            if a.clicked() || b.clicked() || c.clicked() {
+                                // Invalidate
+                                self.canvas_view_rect = Rect::NOTHING;
+                            }
+
+                            if self.selected_canvas_view == CanvasView::PicBufferVectors {
+                                ui.add_space(10.0);
+                                ui.add(Slider::new(&mut self.new_line_width, 0.0..=10.0).text("Line width"));
+
+                                ui.add_space(10.0);
+                                let (x, y) = Self::get_xy_step(&self.canvas_view_rect);
+                                ui.label(format!("AGI pixel scale = ({:.1},{:.1})", x/2.0, y));
+                            }
+                            
                         });
 
                         let label_height = button_container.response.rect.height();
@@ -199,16 +232,13 @@ impl eframe::App for AgiViewerApp {
                             
                             let view = response.rect;
 
-                            match self.show_pri_buffer {
-                                false => {
-                                    self.generate_view(view, PictureBufferType::Picture, &painter);
-                                    painter.extend(self.pic_shapes_list.clone())
-                                },
-                                true => {
-                                    self.generate_view(view, PictureBufferType::Priority, &painter);
-                                    painter.extend(self.pri_shapes_list.clone());
-                                }
+                            if response.rect != self.canvas_view_rect || self.new_line_width != self.line_width {
+                                self.canvas_view_rect = response.rect;
+                                self.line_width = self.new_line_width;
+                                self.canvas_view_shapes = Self::generate_view(self.get_selected_pic(), self.selected_instruction, view, &self.selected_canvas_view, self.line_width, &painter);
                             }
+
+                            painter.extend(self.canvas_view_shapes.clone());
                         });
                     });
                 });

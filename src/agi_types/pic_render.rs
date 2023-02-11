@@ -24,6 +24,52 @@ pub struct PixelBuffer {
     instruction_indexes : Box<[Option<InstructionIndex> ; VIEWPORT_PIXELS]>
 }
 
+pub struct VectorPath {
+    pub points : Vec<Pos2>,
+    pub color : Color32
+}
+
+impl VectorPath {
+    pub fn from_point_list(points : &Vec<PosU8>, color : u8) -> VectorPath {
+        VectorPath { 
+            points: points.iter().map(|p| pos2(p.x as f32, p.y as f32)).collect::<Vec<Pos2>>(), 
+            color: get_color(color)
+        }
+    }
+}
+
+pub struct VectorFill {
+    vertices : Vec<Pos2>,
+    triangles : Vec<usize> // Indexed into vertices
+}
+
+pub struct ShapeBuffer {
+    paths : Vec<VectorPath>,
+    _fills : Vec<VectorFill>
+}
+
+impl ShapeBuffer {
+    pub fn new() -> Self {
+        Self {
+            paths : vec![],
+            _fills : vec![]
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        self._fills.clear();
+    }
+
+    pub fn add_path(&mut self, path : VectorPath) {
+        self.paths.push(path)
+    }
+
+    pub fn get_paths(&self) -> &Vec<VectorPath> {
+        &self.paths
+    }
+}
+
 impl PixelBuffer {
     pub fn new(default_color : Color32) -> Self {
         Self {
@@ -88,13 +134,21 @@ pub fn get_color(agi_color : u8) -> Color32 {
     }
 }
 
-pub fn render_pixels(instructions : &[DerivedPicRenderInstruction], pic_buffer : &mut Option<&mut PixelBuffer>, pri_buffer : &mut Option<&mut PixelBuffer>) -> Result<(), AgiError> {
+pub fn render_to_buffers(
+    instructions : &[DerivedPicRenderInstruction],
+    pic_buffer : &mut Option<&mut PixelBuffer>,
+    pri_buffer : &mut Option<&mut PixelBuffer>,
+    pic_vectors : &mut Option<&mut ShapeBuffer>) -> Result<(), AgiError> {
     if let Some(pic_buffer) = pic_buffer {
         pic_buffer.pixels.iter_mut().for_each(|c| *c = get_color(PIC_BUFFER_BASE_COLOR));
     }
 
     if let Some(pri_buffer) = pri_buffer {
         pri_buffer.pixels.iter_mut().for_each(|c| *c = get_color(PRI_BUFFER_BASE_COLOR));
+    }
+
+    if let Some(pic_vectors) = pic_vectors {
+        pic_vectors.clear();
     }
 
     let mut pic_color = Some(PIC_BUFFER_BASE_COLOR);
@@ -109,10 +163,13 @@ pub fn render_pixels(instructions : &[DerivedPicRenderInstruction], pic_buffer :
                 }
             },
             DerivedPicRenderInstruction::DrawLines(_, lines) => {
-                draw_lines(lines, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?
+                draw_pixel_lines(lines, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?;
+                if let (Some(pic_vectors), Some(pic_color)) = (&mut *pic_vectors, pic_color) {
+                    pic_vectors.add_path(VectorPath::from_point_list(&lines, pic_color));
+                }
             },
             DerivedPicRenderInstruction::Fill(_, points) => {
-                fill(points, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?
+                pixel_fill(points, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?;
             },
             DerivedPicRenderInstruction::Unimplemented(_orignal_inst) => {
                 // TODO: Log?
@@ -123,8 +180,7 @@ pub fn render_pixels(instructions : &[DerivedPicRenderInstruction], pic_buffer :
     Ok(())
 }
 
-fn draw_lines(lines : &Vec<PosU8>, pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
-
+fn draw_pixel_lines(lines : &Vec<PosU8>, pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
     if lines.len() > 0 {
         let (mut x1, mut y1) = (lines[0].x as usize, lines[0].y as usize);
 
@@ -205,26 +261,26 @@ fn sierra_round(num : f32, dir : f32) -> usize {
     }
 }
 
-fn fill(points : &[PosU8], pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
+fn pixel_fill(points : &[PosU8], pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
 
     for (sub_index, point) in points.iter().enumerate() {
         if let (Some(pic_buffer), Some(pic_color)) = (&mut *pic_buffer, pic_color) {
-            fill_specific_buffer(*point, pic_color, &PictureBufferType::Picture, pic_buffer, instruction_index, sub_index)?;
+            pixel_fill_specific_buffer(*point, pic_color, &PictureBufferType::Picture, pic_buffer, instruction_index, sub_index)?;
         }
 
         if let (Some(pri_buffer), Some(pri_color)) = (&mut *pri_buffer, pri_color) {
-            fill_specific_buffer(*point, pri_color, &PictureBufferType::Priority, pri_buffer, instruction_index, sub_index)?;
+            pixel_fill_specific_buffer(*point, pri_color, &PictureBufferType::Priority, pri_buffer, instruction_index, sub_index)?;
         }
     }
 
     Ok(())
 }
 
-fn fill_specific_buffer(point : PosU8, color : u8, buffer_type : &PictureBufferType, buffer : &mut PixelBuffer, instruction_index : usize, sub_index : usize) -> Result<(), AgiError> {
+fn pixel_fill_specific_buffer(point : PosU8, color : u8, buffer_type : &PictureBufferType, buffer : &mut PixelBuffer, instruction_index : usize, sub_index : usize) -> Result<(), AgiError> {
 
     let default_color = match &buffer_type {
-        PictureBufferType::Picture => 0x0Fu8,
-        PictureBufferType::Priority => 0x04u8
+        PictureBufferType::Picture => PIC_BUFFER_BASE_COLOR,
+        PictureBufferType::Priority => PRI_BUFFER_BASE_COLOR
     };
 
     if color == default_color {

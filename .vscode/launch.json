@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["C:\\GOG Games\\Kings Quest 3\\"],
+            "args": [".\\sample_pics\\"],
             "cwd": "${workspaceFolder}"
         },
         {

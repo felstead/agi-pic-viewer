@@ -1,7 +1,11 @@
 use byteorder::*;
 use crate::*;
 
-#[derive(Debug)]
+#[cfg(test)]
+use std::io::Write;
+
+
+#[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum AgiResourceType {
     Logic,
@@ -75,4 +79,68 @@ impl Resource {
             }
         }
     }
+}
+
+#[cfg(test)]
+
+#[test]
+#[ignore]
+fn generate_sample_files() {
+    // This is a little piece of code to package up a few PIC resources for samples
+    // It is used to generate the sample test set
+    let paths_and_pics = vec![
+        (Path::new("C:\\GOG Games\\Kings Quest\\"), vec![0,1,7,11,14,15,16,21,27,41,43,44,52,71,78]),
+        (Path::new("C:\\GOG Games\\Kings Quest 2\\"), vec![0,1,2,3,6,8,9,10,19,20,43,58,59,63,67,69,96]),
+        (Path::new("C:\\GOG Games\\Kings Quest 3\\"), vec![0,1,2,3,4,5,12,13,14,23,24,27,46,47,53,54,67,80,81]),
+    ];
+
+    let mut offset = 0usize;
+    let mut volume_data : Vec<u8> = vec![];
+    let mut picdir_data : Vec<u8> = vec![];
+
+    let mut sig = [0x12u8, 0x34u8];
+
+    for (path, pics) in paths_and_pics.iter() {
+        if let Ok(game) = Game::new_from_dir(path) {
+            for (pic_index, resource) in game.all_resources
+                .iter()
+                .filter(|r| r.resource_type == AgiResourceType::Picture)
+                .enumerate() {
+                
+                if pics.contains(&pic_index) {
+                    let index_data = [
+                        (offset >> 16 & 0x0Fusize) as u8,
+                        (offset >> 8 & 0xFFusize) as u8,
+                        (offset & 0xFFusize) as u8
+                    ];
+                    picdir_data.extend(&index_data[..]);
+
+                    let raw_data = resource.get_raw_data();
+                    
+                    // Write signature
+                    volume_data.extend(sig);
+                    
+                    // Write volume index
+                    volume_data.push(0);
+
+                    // Write resource length
+                    let mut len = [0u8; 2];
+                    LittleEndian::write_u16(&mut len, raw_data.len() as u16);
+                    volume_data.extend(len);
+
+                    // Write data
+                    volume_data.extend(raw_data);
+
+                    offset += raw_data.len() + 5;
+                }
+            }
+        }
+    }
+
+    // Write the samples to our files
+    let mut volume_file = File::create("VOL.0").unwrap();
+    volume_file.write_all(&volume_data).unwrap();
+
+    let mut picdir_file = File::create("PICDIR").unwrap();
+    picdir_file.write_all(&picdir_data).unwrap();
 }

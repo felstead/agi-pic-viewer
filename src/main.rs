@@ -20,11 +20,17 @@ struct AgiViewerApp {
     canvas_view_rect : Rect,
     canvas_view_shapes : Vec<Shape>,
     selected_pic : usize,
-    texture_handles : Vec<TextureHandle>,
+    thumbnail_texture_handles : Vec<TextureHandle>,
+    main_viewport_texture : Option<TextureHandle>,
     selected_canvas_view : CanvasView,
     selected_instruction : usize,
     line_width : f32,
     new_line_width : f32
+}
+
+enum RenderData {
+    Pixel(Vec<Color32>),
+    Vector(Vec<Shape>)
 }
 
 impl AgiViewerApp {
@@ -36,7 +42,8 @@ impl AgiViewerApp {
             canvas_view_rect : Rect::EVERYTHING,
             canvas_view_shapes : vec![],
             selected_pic : 0,
-            texture_handles : vec![],
+            thumbnail_texture_handles : vec![],
+            main_viewport_texture : None,
             selected_canvas_view : CanvasView::PicBufferPixels,
             selected_instruction,
             line_width : 2.0,
@@ -48,10 +55,7 @@ impl AgiViewerApp {
         &self.game.pic_resources[self.selected_pic]
     }
 
-    fn generate_view(pic : &PicResource, selected_instruction : usize, view : Rect, canvas_view_type : &CanvasView, line_width : f32, painter : &Painter) -> Vec<Shape> {
-
-        let mut shape_buffer : Vec<Shape> = vec![];
-
+    fn generate_view(&self, pic : &PicResource, view : Rect, canvas_view_type : &CanvasView, line_width : f32, painter : &Painter) -> RenderData {
         // The actual image pixels
         let (mut pic_buffer, mut pri_buffer, mut pic_vectors) = match canvas_view_type {
             CanvasView::PicBufferPixels => {
@@ -66,36 +70,22 @@ impl AgiViewerApp {
         };
 
         render_to_buffers(
-            &pic.get_instructions()[0..=selected_instruction],
+            &pic.get_instructions()[0..=self.selected_instruction],
             &mut pic_buffer.as_mut(),
             &mut pri_buffer.as_mut(),
             &mut pic_vectors.as_mut()).unwrap();
-
-        
+    
         match canvas_view_type {
-            CanvasView::PicBufferPixels => Self::draw_pixels(&view, &mut shape_buffer, pic_buffer.unwrap().get_pixels(), painter),
-            CanvasView::PriBufferPixels => Self::draw_pixels(&view, &mut shape_buffer, pri_buffer.unwrap().get_pixels(), painter),
-            CanvasView::PicBufferVectors => Self::draw_vectors(&view, line_width, &mut shape_buffer, &pic_vectors.unwrap(), painter)
-        };
-
-        shape_buffer
-    }
-
-    fn draw_pixels(view : &Rect, shape_buffer : &mut Vec<Shape>, pixels : &[Color32], painter : &Painter) {
-        let (x_step, y_step) = Self::get_xy_step(view);
-
-        for (i, px) in pixels.iter().enumerate() {
-            let x = ((i % VIEWPORT_WIDTH) as f32 * x_step) + view.min.x;
-            let y = ((i / VIEWPORT_WIDTH) as f32 * y_step) + view.min.y;
-
-            let px_rect = Rect::from_min_max(painter.round_pos_to_pixels(pos2(x,y)), painter.round_pos_to_pixels(pos2(x+x_step, y+y_step)));
-
-            shape_buffer.push(Shape::rect_filled(px_rect, Rounding::none(), *px));
+            CanvasView::PicBufferPixels => RenderData::Pixel(pic_buffer.unwrap().get_pixels_vec()),
+            CanvasView::PriBufferPixels => RenderData::Pixel(pri_buffer.unwrap().get_pixels_vec()),
+            CanvasView::PicBufferVectors => RenderData::Vector(Self::draw_vectors(&view, line_width, &pic_vectors.unwrap(), painter))
         }
     }
 
-    fn draw_vectors(view : &Rect, line_width : f32, shape_buffer : &mut Vec<Shape>, vectors : &ShapeBuffer, _painter : &Painter) {
+    fn draw_vectors(view : &Rect, line_width : f32, vectors : &ShapeBuffer, _painter : &Painter) -> Vec<Shape> {
         let (x_step, y_step) = Self::get_xy_step(view);
+
+        let mut shape_buffer = vec![];
 
         // Background
         shape_buffer.push(Shape::rect_filled(*view, Rounding::none(), Color32::WHITE));
@@ -117,6 +107,8 @@ impl AgiViewerApp {
                 shape_buffer.push(line);
             }
         }
+
+        shape_buffer
     }
 
     fn get_xy_step(view : &Rect) -> (f32, f32) {
@@ -126,7 +118,7 @@ impl AgiViewerApp {
 
 impl eframe::App for AgiViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.texture_handles.is_empty() {
+        if self.thumbnail_texture_handles.is_empty() {
             // Load the thumbnail textures
             self.game.pic_resources.iter().enumerate().for_each(|(i, r)| {
                 let mut pic_buffer = PixelBuffer::new(Color32::WHITE);
@@ -136,8 +128,18 @@ impl eframe::App for AgiViewerApp {
                     size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
                     pixels: pic_buffer.get_pixels_vec()
                 };
-                self.texture_handles.push(ctx.load_texture(format!("PIC {}", i), image_data, Default::default()));
+                self.thumbnail_texture_handles.push(ctx.load_texture(format!("PIC {}", i), image_data, Default::default()));
             });
+        }
+
+        if self.main_viewport_texture.is_none() {
+            // Blank image
+            let pixels = Box::new([Color32::WHITE ; VIEWPORT_PIXELS]).to_vec();
+            let blank = ColorImage {
+                size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
+                pixels
+            };
+            self.main_viewport_texture = Some(ctx.load_texture("MAIN_BUFFER", blank, Default::default()));
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -151,7 +153,7 @@ impl eframe::App for AgiViewerApp {
                             ui.vertical(|ui| {
                                 ui.style_mut().wrap = Some(false);
                                 ui.label(format!("PIC {}", i));
-                                let image_button = ImageButton::new(self.texture_handles[i].id(), vec2(VIEWPORT_WIDTH as f32, VIEWPORT_HEIGHT as f32 / 2.0))
+                                let image_button = ImageButton::new(self.thumbnail_texture_handles[i].id(), vec2(VIEWPORT_WIDTH as f32, VIEWPORT_HEIGHT as f32 / 2.0))
                                     .selected(i == self.selected_pic);
 
                                 if ui.add(image_button).clicked() {
@@ -235,8 +237,22 @@ impl eframe::App for AgiViewerApp {
                             if response.rect != self.canvas_view_rect || self.new_line_width != self.line_width {
                                 self.canvas_view_rect = response.rect;
                                 self.line_width = self.new_line_width;
-                                self.canvas_view_shapes = Self::generate_view(self.get_selected_pic(), self.selected_instruction, view, &self.selected_canvas_view, self.line_width, &painter);
-                            }
+
+                                self.canvas_view_shapes = match self.generate_view(self.get_selected_pic(), view, &self.selected_canvas_view, self.line_width, &painter) {
+                                    RenderData::Pixel(pixels) => {
+                                        let image_data = ColorImage {
+                                            size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
+                                            pixels
+                                        };
+
+                                        self.main_viewport_texture.as_mut().unwrap().set(image_data, TextureOptions::NEAREST);
+                                        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                                        vec![Shape::image(self.main_viewport_texture.as_ref().unwrap().id(), view, uv, Color32::WHITE)]
+
+                                    }
+                                    RenderData::Vector(shapes) => shapes
+                                }
+                            };
 
                             painter.extend(self.canvas_view_shapes.clone());
                         });

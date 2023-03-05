@@ -1,14 +1,92 @@
-use std::collections::VecDeque;
+use std::collections::{VecDeque};
 use egui::*;
 use crate::*;
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default)]
+pub struct RenderOptions {
+    pub render_only_selected_instruction : bool,
+    pub show_fill_outlines : bool,
+}
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct InstructionIndex {
     #[allow(dead_code)]
     base_index : u16,
     #[allow(dead_code)]
     sub_index : u16
 }
+
+// Internally used to track the edges of a fill
+#[derive(PartialEq, Eq)]
+enum FillEdge {
+    Line(InstructionIndex),
+    TopBorder,
+    RightBorder,
+    BottomBorder,
+    LeftBorder
+}
+
+impl FillEdge {
+
+    const MAX_X : f32 = (VIEWPORT_WIDTH-1) as f32;
+    const MAX_Y : f32 = (VIEWPORT_HEIGHT-1) as f32;
+    const TOP_LEFT : Pos2 = pos2(0f32, 0f32);
+    const TOP_RIGHT : Pos2 = pos2(Self::MAX_X, 0f32);
+    const BOTTOM_RIGHT : Pos2 = pos2(Self::MAX_X, Self::MAX_Y);
+    const BOTTOM_LEFT : Pos2 = pos2(0f32, Self::MAX_Y);
+
+    const TOP_BORDER : [Pos2; 2] = [Self::TOP_LEFT, Self::TOP_RIGHT];
+    const RIGHT_BORDER : [Pos2; 2] = [Self::TOP_RIGHT, Self::BOTTOM_RIGHT];
+    const BOTTOM_BORDER : [Pos2; 2] = [Self::BOTTOM_RIGHT, Self::BOTTOM_LEFT];
+    const LEFT_BORDER : [Pos2; 2] = [Self::BOTTOM_LEFT, Self::TOP_LEFT];
+
+    pub fn to_line(&self, instructions : &[DerivedPicRenderInstruction]) -> Result<[Pos2; 2], AgiError> {
+        match self {
+            Self::Line(inst) => {
+                if (inst.base_index as usize) < instructions.len() {
+                    let bi = inst.base_index as usize;
+                    match &instructions[bi] {
+                        DerivedPicRenderInstruction::DrawLines(_, points) => {
+                            let si = inst.sub_index as usize;
+                            if points.len() == 1 && si == 0 {
+                                // Special case for single pixel lines
+                                Ok([points[si].to_pos2(), points[si].to_pos2()])
+                            } else if (si) < (points.len() - 1) {
+                                Ok([points[si].to_pos2(), points[si+1].to_pos2()])
+                            } else {
+                                Err(AgiError::Render(format!("Sub index was out of bounds")))
+                            }
+                        },
+                        _ => Err(AgiError::Render(format!("Fill instruction adjacency touched a non line instruction")))
+
+                    }
+                    
+                } else {
+                    Err(AgiError::Render(format!("Instruction index was out of range!")))
+                }
+            },
+            Self::TopBorder => Ok(Self::TOP_BORDER),
+            Self::RightBorder => Ok(Self::RIGHT_BORDER),
+            Self::BottomBorder => Ok(Self::BOTTOM_BORDER),
+            Self::LeftBorder => Ok(Self::LEFT_BORDER)
+        }
+    }
+}
+
+/* 
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct LineU8 {
+    start : [u8; 2],
+    end : [u8 ; 2]
+}
+
+fn line_u8(start_x : u8, start_y : u8, end_x : u8, end_y : u8) -> LineU8 {
+    LineU8 {
+        start: [start_x, start_y],
+        end: [end_x, end_y]
+    }
+}
+*/
 
 impl InstructionIndex {
     pub fn new_sub(base_index : usize, sub_index : usize) -> Self {
@@ -17,11 +95,6 @@ impl InstructionIndex {
             sub_index : sub_index as u16
         }
     }
-}
-
-pub struct PixelBuffer {
-    pixels : Box<[Color32 ; VIEWPORT_PIXELS]>,
-    instruction_indexes : Box<[Option<InstructionIndex> ; VIEWPORT_PIXELS]>
 }
 
 pub struct VectorPath {
@@ -36,12 +109,31 @@ impl VectorPath {
             color: get_color(color)
         }
     }
+
+    pub fn from_line(points : [Pos2; 2], color : u8) -> VectorPath {
+        VectorPath {
+            points: points.to_vec(),
+            color: get_color(color)
+        }
+    }
 }
 
 pub struct VectorFill {
     vertices : Vec<Pos2>,
     triangles : Vec<usize> // Indexed into vertices
 }
+
+fn vector_fill_from_fill_edges(edges_list : Vec<FillEdge>) -> Result<VectorFill, AgiError> {
+    let mut fill = VectorFill {
+        vertices : vec![],
+        triangles : vec![]
+    };
+
+    // Convert the fill edges to vertices
+
+    Ok(fill)
+}
+
 
 pub struct ShapeBuffer {
     paths : Vec<VectorPath>,
@@ -70,11 +162,33 @@ impl ShapeBuffer {
     }
 }
 
+pub struct PixelBuffer {
+    pixels : Box<[Color32 ; VIEWPORT_PIXELS]>,
+    instruction_indexes : Box<[Option<InstructionIndex> ; VIEWPORT_PIXELS]>
+}
+
 impl PixelBuffer {
     pub fn new(default_color : Color32) -> Self {
         Self {
             pixels : Box::new([default_color ; VIEWPORT_PIXELS]),
             instruction_indexes : Box::new([Some(InstructionIndex::default()) ; VIEWPORT_PIXELS]),
+        }
+    }
+
+    fn reset(&mut self, color : &Color32) {
+        for i in 0..VIEWPORT_PIXELS {
+            self.pixels[i] = *color;
+            self.instruction_indexes[i] = None;
+        }
+    }
+
+    fn isolate_instruction_pixels(&mut self, index : usize, _sub_index : Option<usize>, mask_color : Color32) {
+        for i in 0..VIEWPORT_PIXELS {
+            if let Some(inst) = self.instruction_indexes[i] {
+                if inst.base_index as usize != index {
+                    self.pixels[i] = mask_color;
+                }
+            }
         }
     }
 
@@ -108,6 +222,16 @@ impl PixelBuffer {
             Ok(self.pixels[index])
         }
     }
+
+    pub fn get_pixel_instruction(&self, x : usize, y : usize) -> Result<Option<InstructionIndex>, AgiError> {
+        let index = y * VIEWPORT_WIDTH + x;
+        if index >= VIEWPORT_PIXELS {
+            Err(AgiError::Render(format!("Pixel location ({x},{y}) out of range!")))
+        } else {
+            Ok(self.instruction_indexes[index])
+        }
+    }
+
 }
 
 
@@ -136,15 +260,18 @@ pub fn get_color(agi_color : u8) -> Color32 {
 
 pub fn render_to_buffers(
     instructions : &[DerivedPicRenderInstruction],
+    render_options : &RenderOptions,
     pic_buffer : &mut Option<&mut PixelBuffer>,
     pri_buffer : &mut Option<&mut PixelBuffer>,
     pic_vectors : &mut Option<&mut ShapeBuffer>) -> Result<(), AgiError> {
+
+    // Clear pixel buffers
     if let Some(pic_buffer) = pic_buffer {
-        pic_buffer.pixels.iter_mut().for_each(|c| *c = get_color(PIC_BUFFER_BASE_COLOR));
+        pic_buffer.reset(&get_color(PIC_BUFFER_BASE_COLOR));
     }
 
     if let Some(pri_buffer) = pri_buffer {
-        pri_buffer.pixels.iter_mut().for_each(|c| *c = get_color(PRI_BUFFER_BASE_COLOR));
+        pri_buffer.reset(&get_color(PRI_BUFFER_BASE_COLOR));
     }
 
     if let Some(pic_vectors) = pic_vectors {
@@ -154,7 +281,15 @@ pub fn render_to_buffers(
     let mut pic_color = Some(PIC_BUFFER_BASE_COLOR);
     let mut pri_color = Some(PRI_BUFFER_BASE_COLOR);
 
+    let latest_instruction_index = instructions.len() - 1;
+
+    // Option aliases
+    let only_latest_instruction = render_options.render_only_selected_instruction;
+    let show_fill_outlines = render_options.show_fill_outlines;
+
+    // Actual rendering
     for (instruction_index, instruction) in instructions.iter().enumerate() {
+        let render_instruction = !only_latest_instruction || (only_latest_instruction && instruction_index == latest_instruction_index);
         match instruction {
             DerivedPicRenderInstruction::SetColor(_, buffer_type, color) => {
                 match buffer_type {
@@ -164,17 +299,49 @@ pub fn render_to_buffers(
             },
             DerivedPicRenderInstruction::DrawLines(_, lines) => {
                 draw_pixel_lines(lines, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?;
-                if let (Some(pic_vectors), Some(pic_color)) = (&mut *pic_vectors, pic_color) {
-                    pic_vectors.add_path(VectorPath::from_point_list(&lines, pic_color));
+
+                // For vectors, only place the latest instruction if requested
+                if render_instruction {
+                    if let (Some(pic_vectors), Some(pic_color)) = (&mut *pic_vectors, pic_color) {
+                        pic_vectors.add_path(VectorPath::from_point_list(&lines, pic_color));
+                    }
                 }
             },
             DerivedPicRenderInstruction::Fill(_, points) => {
-                pixel_fill(points, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?;
+                let (pic_edges, pri_edges) = pixel_fill(points, pic_buffer, pic_color, pri_buffer, pri_color, instruction_index)?;
+                
+                // For vectors, only place the latest instruction if requested
+                if render_instruction {
+                    if let (Some(pic_vectors), Some(pic_color)) = (&mut *pic_vectors, pic_color) {
+                        // TODO: Move this out to its own function
+                        for pic_edge_list in pic_edges {
+                            for pic_edge in pic_edge_list {
+                                let line = pic_edge.to_line(&instructions)?;
+
+                                if show_fill_outlines {
+                                    pic_vectors.add_path(VectorPath::from_line(line, pic_color));
+                                }
+                            }
+                        }
+                    }
+                }
             },
             DerivedPicRenderInstruction::Unimplemented(_orignal_inst) => {
                 // TODO: Log?
             }
         }
+    }
+
+    if only_latest_instruction {
+        // Mask out pixels from other instructions
+        if let Some(pic_buffer) = pic_buffer {
+            pic_buffer.isolate_instruction_pixels(latest_instruction_index, None, get_color(PIC_BUFFER_BASE_COLOR));
+        }
+        
+        if let Some(pri_buffer) = pri_buffer {
+            pri_buffer.isolate_instruction_pixels(latest_instruction_index, None, get_color(PRI_BUFFER_BASE_COLOR));
+        }
+        
     }
 
     Ok(())
@@ -201,7 +368,9 @@ fn draw_pixel_lines(lines : &Vec<PosU8>, pic_buffer : &mut Option<&mut PixelBuff
             // Just draw a single pixel
             set_buffers_pixels(x1, y1, 0)?;
         } else {
-            for (line_index, line) in lines.iter().enumerate().skip(1) {
+            for (point_index, line) in lines.iter().enumerate().skip(1) {
+                let line_index = point_index - 1;
+
                 let (x2, y2) = (line.x as usize, line.y as usize);
     
                 let (height, width) = (y2 as i32 - y1 as i32, x2 as i32 - x1 as i32);
@@ -222,7 +391,7 @@ fn draw_pixel_lines(lines : &Vec<PosU8>, pic_buffer : &mut Option<&mut PixelBuff
                         x += add_x;
                         y += add_y;
                     }
-    
+
                     set_buffers_pixels(x2, y2, line_index)?;
                 } else {
                     add_y = height.signum() as f32;
@@ -261,39 +430,46 @@ fn sierra_round(num : f32, dir : f32) -> usize {
     }
 }
 
-fn pixel_fill(points : &[PosU8], pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(), AgiError> {
+fn pixel_fill(points : &[PosU8], pic_buffer : &mut Option<&mut PixelBuffer>, pic_color : Option<u8>, pri_buffer : &mut Option<&mut PixelBuffer>, pri_color : Option<u8>, instruction_index : usize) -> Result<(Vec<Vec<FillEdge>>, Vec<Vec<FillEdge>>), AgiError> {
+
+    let mut pic_edges : Vec<Vec<FillEdge>> = vec![];
+    let mut pri_edges : Vec<Vec<FillEdge>> = vec![];
 
     for (sub_index, point) in points.iter().enumerate() {
         if let (Some(pic_buffer), Some(pic_color)) = (&mut *pic_buffer, pic_color) {
-            pixel_fill_specific_buffer(*point, pic_color, &PictureBufferType::Picture, pic_buffer, instruction_index, sub_index)?;
+            pic_edges.push(pixel_fill_specific_buffer(*point, pic_color, &PictureBufferType::Picture, pic_buffer, instruction_index, sub_index)?);
         }
 
         if let (Some(pri_buffer), Some(pri_color)) = (&mut *pri_buffer, pri_color) {
-            pixel_fill_specific_buffer(*point, pri_color, &PictureBufferType::Priority, pri_buffer, instruction_index, sub_index)?;
+            pri_edges.push(pixel_fill_specific_buffer(*point, pri_color, &PictureBufferType::Priority, pri_buffer, instruction_index, sub_index)?);
         }
     }
 
-    Ok(())
+    Ok((pic_edges, pri_edges))
 }
 
-fn pixel_fill_specific_buffer(point : PosU8, color : u8, buffer_type : &PictureBufferType, buffer : &mut PixelBuffer, instruction_index : usize, sub_index : usize) -> Result<(), AgiError> {
+fn pixel_fill_specific_buffer(point : PosU8, color : u8, buffer_type : &PictureBufferType, buffer : &mut PixelBuffer, instruction_index : usize, sub_index : usize) -> Result<Vec<FillEdge>, AgiError> {
 
     let default_color = match &buffer_type {
         PictureBufferType::Picture => PIC_BUFFER_BASE_COLOR,
         PictureBufferType::Priority => PRI_BUFFER_BASE_COLOR
     };
 
+    // Use these to track what is touched by the fill
+    let mut fill_edges : Vec<FillEdge> = vec![];
+
     if color == default_color {
         // Filling with the default color is a no-op 
-        return Ok(());
+        return Ok(fill_edges);
     }
 
     // Do our fill
     let mut fill_queue = VecDeque::from([(point.x as usize, point.y as usize)]);
 
+    let (mut top, mut right, mut bottom, mut left) = (false, false, false, false);
+
     while !fill_queue.is_empty() {
         let (cur_x, cur_y) = fill_queue.pop_front().unwrap();
-
 
         if buffer.get_pixel(cur_x, cur_y).unwrap() == get_color(default_color) {
             // Fill this and add our surroundings
@@ -301,20 +477,69 @@ fn pixel_fill_specific_buffer(point : PosU8, color : u8, buffer_type : &PictureB
 
             if cur_x < VIEWPORT_WIDTH - 1 { 
                 fill_queue.push_back((cur_x+1, cur_y));
+            } else {
+                right = true;
             }
+
             if cur_x > 0 { 
                 fill_queue.push_back((cur_x-1, cur_y));
+            } else {
+                left = true;
             }
 
             if cur_y < VIEWPORT_HEIGHT - 1 {
                 fill_queue.push_back((cur_x, cur_y+1));
+            } else {
+                bottom = true;
             }
 
             if cur_y > 0 {
                 fill_queue.push_back((cur_x, cur_y-1));
+            } else {
+                top = true;
+            }
+        } else {
+            if let Some(inst) = buffer.get_pixel_instruction(cur_x, cur_y)? {
+                if inst.base_index as usize != instruction_index {
+                    // Get the line for this instruction
+                    // I'm going to assume since these buffers should be small that a search of the vec will be faster
+                    // than using a hash set
+                    // TODO: Measure?
+                    let edge = FillEdge::Line(inst);
+                    if !fill_edges.contains(&edge) {
+                        fill_edges.push(edge);
+                    }
+                }
             }
         }
     }
 
-    Ok(())
+    if top {
+        fill_edges.push(FillEdge::TopBorder);
+    }
+    if right {
+        fill_edges.push(FillEdge::RightBorder);
+    }
+    if bottom {
+        fill_edges.push(FillEdge::BottomBorder);
+    }
+    if left {
+        fill_edges.push(FillEdge::LeftBorder)
+    }
+
+    /*
+    if top { 
+        border_lines.insert(line_u8(0u8,0u8, (VIEWPORT_WIDTH-1) as u8, 0u8 )); 
+    }
+    if right { 
+        border_lines.insert(line_u8((VIEWPORT_WIDTH-1) as u8, 0u8, (VIEWPORT_WIDTH-1) as u8, (VIEWPORT_HEIGHT-1) as u8 )); 
+    }
+    if bottom { 
+        border_lines.insert(line_u8((VIEWPORT_WIDTH-1) as u8, (VIEWPORT_HEIGHT-1) as u8 , 0 as u8, (VIEWPORT_HEIGHT-1) as u8 )); 
+    }
+    if left { 
+        border_lines.insert(line_u8(0u8,(VIEWPORT_HEIGHT-1) as u8, 0u8, 0u8 )); 
+    }*/
+
+    Ok(fill_edges)
 }

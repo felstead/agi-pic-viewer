@@ -4,7 +4,6 @@ use crate::*;
 #[cfg(test)]
 use std::io::Write;
 
-
 #[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum AgiResourceType {
@@ -13,8 +12,8 @@ pub enum AgiResourceType {
     View,
     Sound,
     Other
-
 }
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Resource {
@@ -98,7 +97,7 @@ fn generate_sample_files() {
     let mut volume_data : Vec<u8> = vec![];
     let mut picdir_data : Vec<u8> = vec![];
 
-    let mut sig = [0x12u8, 0x34u8];
+    let sig = [0x12u8, 0x34u8];
 
     for (path, pics) in paths_and_pics.iter() {
         if let Ok(game) = Game::new_from_dir(path) {

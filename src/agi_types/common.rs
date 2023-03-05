@@ -1,3 +1,4 @@
+use egui::{Pos2, pos2};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -26,5 +27,9 @@ pub struct PosU8 {
 impl PosU8 {
     pub fn new(x : u8, y : u8) -> Self {
         Self { x, y }
+    }
+
+    pub fn to_pos2(&self) -> Pos2 {
+        pos2(self.x as f32, self.y as f32)
     }
 }

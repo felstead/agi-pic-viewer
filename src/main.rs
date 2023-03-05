@@ -24,13 +24,17 @@ struct AgiViewerApp {
     main_viewport_texture : Option<TextureHandle>,
     selected_canvas_view : CanvasView,
     selected_instruction : usize,
+    show_pixel_underlay : bool,
     line_width : f32,
-    new_line_width : f32
+    new_line_width : f32,
+    render_options : RenderOptions
 }
 
 enum RenderData {
     Pixel(Vec<Color32>),
-    Vector(Vec<Shape>)
+    Vector(Vec<Shape>),
+    VectorAndPixel(Vec<Shape>, Vec<Color32>)
+
 }
 
 impl AgiViewerApp {
@@ -46,8 +50,10 @@ impl AgiViewerApp {
             main_viewport_texture : None,
             selected_canvas_view : CanvasView::PicBufferPixels,
             selected_instruction,
+            show_pixel_underlay : false,
             line_width : 2.0,
-            new_line_width : 2.0
+            new_line_width : 2.0,
+            render_options : RenderOptions { render_only_selected_instruction: false, show_fill_outlines: false }
         }
     }
 
@@ -55,7 +61,7 @@ impl AgiViewerApp {
         &self.game.pic_resources[self.selected_pic]
     }
 
-    fn generate_view(&self, pic : &PicResource, view : Rect, canvas_view_type : &CanvasView, line_width : f32, painter : &Painter) -> RenderData {
+    fn generate_view(&self, pic : &PicResource, view : Rect, canvas_view_type : &CanvasView, line_width : f32, painter : &Painter) -> (Option<Vec<Color32>>, Option<Vec<Shape>>) {
         // The actual image pixels
         let (mut pic_buffer, mut pri_buffer, mut pic_vectors) = match canvas_view_type {
             CanvasView::PicBufferPixels => {
@@ -71,15 +77,26 @@ impl AgiViewerApp {
 
         render_to_buffers(
             &pic.get_instructions()[0..=self.selected_instruction],
+            &self.render_options,
             &mut pic_buffer.as_mut(),
             &mut pri_buffer.as_mut(),
             &mut pic_vectors.as_mut()).unwrap();
     
+        
+        let mut pixels : Option<Vec<Color32>> = None;
+        let mut vectors : Option<Vec<Shape>> = None; 
+
         match canvas_view_type {
-            CanvasView::PicBufferPixels => RenderData::Pixel(pic_buffer.unwrap().get_pixels_vec()),
-            CanvasView::PriBufferPixels => RenderData::Pixel(pri_buffer.unwrap().get_pixels_vec()),
-            CanvasView::PicBufferVectors => RenderData::Vector(Self::draw_vectors(&view, line_width, &pic_vectors.unwrap(), painter))
+            CanvasView::PicBufferPixels => pixels = Some(pic_buffer.unwrap().get_pixels_vec()),
+            CanvasView::PriBufferPixels => pixels = Some(pri_buffer.unwrap().get_pixels_vec()),
+            CanvasView::PicBufferVectors => {
+                if self.show_pixel_underlay {
+                    pixels = Some(pic_buffer.unwrap().get_pixels_vec());
+                }
+                vectors = Some(Self::draw_vectors(&view, line_width, &pic_vectors.unwrap(), painter));
+            }
         }
+        (pixels, vectors)
     }
 
     fn draw_vectors(view : &Rect, line_width : f32, vectors : &ShapeBuffer, _painter : &Painter) -> Vec<Shape> {
@@ -87,18 +104,17 @@ impl AgiViewerApp {
 
         let mut shape_buffer = vec![];
 
-        // Background
-        shape_buffer.push(Shape::rect_filled(*view, Rounding::none(), Color32::WHITE));
+        let (px_offset_x, px_offset_y) = (x_step / 2f32, y_step / 2f32);
 
         // Add lines here
         for path in vectors.get_paths() {
             if path.points.len() == 1 {
                 let p = path.points[0];
-                shape_buffer.push(Shape::circle_filled(pos2((p.x * x_step) + view.min.x, (p.y * y_step) + view.min.y), line_width / 2.0, path.color));
+                shape_buffer.push(Shape::circle_filled(pos2((p.x * x_step) + view.min.x + px_offset_x, (p.y * y_step) + view.min.y + px_offset_y), line_width / 2.0, path.color));
             } else {
                 let translated_lines = path.points.iter()
                 .map(|p| {
-                    pos2((p.x * x_step) + view.min.x, (p.y * y_step) + view.min.y)
+                    pos2((p.x * x_step) + view.min.x + px_offset_x, (p.y * y_step) + view.min.y + px_offset_y)
                 })
                 .collect::<Vec<Pos2>>();
 
@@ -122,7 +138,7 @@ impl eframe::App for AgiViewerApp {
             // Load the thumbnail textures
             self.game.pic_resources.iter().enumerate().for_each(|(i, r)| {
                 let mut pic_buffer = PixelBuffer::new(Color32::WHITE);
-                render_to_buffers(r.get_instructions(), &mut Some(&mut pic_buffer), &mut None, &mut None).unwrap();
+                render_to_buffers(r.get_instructions(), &RenderOptions::default(), &mut Some(&mut pic_buffer), &mut None, &mut None).unwrap();
 
                 let image_data = ColorImage {
                     size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
@@ -174,10 +190,10 @@ impl eframe::App for AgiViewerApp {
                     // Add the instruction list
                     ui.vertical(|ui| {
                         ui.set_max_width(250.);
-                        ScrollArea::both().auto_shrink([false; 2]).show(ui, |ui| {
-                            ui.label("Instruction list");
-                            ui.separator();
 
+                        ui.label(format!("Instruction List ({}/{})", self.selected_instruction, self.get_selected_pic().get_instructions().len()));                        
+                        ui.separator();
+                        ScrollArea::both().auto_shrink([false; 2]).show(ui, |ui| {
                             for i in 0..(self.get_selected_pic().get_instructions().len()) {
                                 let inst_text = format!("{}. {}", i, self.get_selected_pic().get_instructions()[i]);
                                 ui.style_mut().wrap = Some(false);
@@ -188,7 +204,7 @@ impl eframe::App for AgiViewerApp {
                                     self.canvas_view_rect = Rect::NOTHING;
                                 }
                             }
-                        })
+                        });
                     });
                     
                     ui.vertical(|ui| {
@@ -213,15 +229,40 @@ impl eframe::App for AgiViewerApp {
                                 self.canvas_view_rect = Rect::NOTHING;
                             }
 
-                            if self.selected_canvas_view == CanvasView::PicBufferVectors {
-                                ui.add_space(10.0);
-                                ui.add(Slider::new(&mut self.new_line_width, 0.0..=10.0).text("Line width"));
+                            // Render options button
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.menu_button("Render Options ☰", |ui| {
+                                    
+                                    ui.vertical(|ui| {
+                                        ui.set_width(200f32);
+                                        ui.strong("Global Options");
+                                        ui.separator();
+                                        if ui.checkbox(&mut self.render_options.render_only_selected_instruction, "Render only selected instruction").clicked() {
+                                            self.canvas_view_rect = Rect::NOTHING;
+                                        };
 
-                                ui.add_space(10.0);
-                                let (x, y) = Self::get_xy_step(&self.canvas_view_rect);
-                                ui.label(format!("AGI pixel scale = ({:.1},{:.1})", x/2.0, y));
-                            }
-                            
+                                        if ui.checkbox(&mut self.render_options.show_fill_outlines, "Show fill border lines").clicked() {
+                                            self.canvas_view_rect = Rect::NOTHING;
+                                        }
+
+                                        ui.vertical(|ui| {
+                                            ui.set_enabled(self.selected_canvas_view == CanvasView::PicBufferVectors);
+
+                                            ui.separator();
+                                            ui.strong("Vector Options");
+                                            ui.separator();
+                                            ui.label("Vector Line Width");
+                                            ui.add(Slider::new(&mut self.new_line_width, 0.0..=10.0));
+                                            let (x, y) = Self::get_xy_step(&self.canvas_view_rect);
+                                            ui.label(format!("AGI pixel scale = ({:.1},{:.1})", x/2.0, y));
+                                            ui.separator();
+                                            if ui.checkbox(&mut self.show_pixel_underlay, "Show Pixel Underlay").clicked() {
+                                                self.canvas_view_rect = Rect::NOTHING;
+                                            };
+                                        })
+                                    });
+                                });
+                            });
                         });
 
                         let label_height = button_container.response.rect.height();
@@ -238,21 +279,47 @@ impl eframe::App for AgiViewerApp {
                                 self.canvas_view_rect = response.rect;
                                 self.line_width = self.new_line_width;
 
-                                self.canvas_view_shapes = match self.generate_view(self.get_selected_pic(), view, &self.selected_canvas_view, self.line_width, &painter) {
-                                    RenderData::Pixel(pixels) => {
-                                        let image_data = ColorImage {
-                                            size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
-                                            pixels
-                                        };
+                                let (pixels, vectors) = self.generate_view(self.get_selected_pic(), view, &self.selected_canvas_view, self.line_width, &painter);
 
-                                        self.main_viewport_texture.as_mut().unwrap().set(image_data, TextureOptions::NEAREST);
-                                        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                                        vec![Shape::image(self.main_viewport_texture.as_ref().unwrap().id(), view, uv, Color32::WHITE)]
+                                self.canvas_view_shapes.clear();
 
-                                    }
-                                    RenderData::Vector(shapes) => shapes
+                                if let Some(pixels) = pixels {
+                                    let image_data = ColorImage {
+                                        size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
+                                        pixels
+                                    };
+
+                                    self.main_viewport_texture.as_mut().unwrap().set(image_data, TextureOptions::NEAREST);
+                                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+
+                                    let tint = if self.show_pixel_underlay && self.selected_canvas_view == CanvasView::PicBufferVectors {
+                                        Color32::from_white_alpha(128)
+                                    } else {
+                                        Color32::WHITE
+                                    };
+
+                                    self.canvas_view_shapes.push(Shape::image(self.main_viewport_texture.as_ref().unwrap().id(), view, uv, tint));
                                 }
-                            };
+
+                                if let Some(vectors) = vectors {
+                                    if !self.show_pixel_underlay {
+                                        // If we're not showing the pixel underlay, draw the background
+                                        self.canvas_view_shapes.push(Shape::rect_filled(view, Rounding::none(), Color32::WHITE));
+                                    } else {
+                                        // We are drawing the pixel underlay, so create an outline for our vectors
+                                        let outlines : Vec<Shape> = vectors.iter().map(|v| {
+                                            match v {
+                                                Shape::Path(s) => Some(Shape::line(s.points.clone(), Stroke::new(self.line_width+1.5, Color32::WHITE))),
+                                                _ => None
+                                            }
+                                        })
+                                        .flatten()
+                                        .collect();
+                                        self.canvas_view_shapes.extend(outlines);
+                                    }
+                                    self.canvas_view_shapes.extend(vectors);
+                                }
+                            }
 
                             painter.extend(self.canvas_view_shapes.clone());
                         });
@@ -276,8 +343,8 @@ fn main() -> Result<(), AgiError> {
 
     let game = Game::new_from_dir(Path::new(&args[1]))?;
 
-    let width = 1500.;
-    let height = 900.;
+    let width = 1400.;
+    let height = 800.;
 
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(width, height)),
